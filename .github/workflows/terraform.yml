@@ -1,0 +1,111 @@
+name: Terraform Platform Pipeline
+
+on:
+  pull_request:
+    paths:
+      - 'terraform/**'
+  push:
+    branches:
+      - main
+    paths:
+      - 'terraform/**'
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: terraform-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: ap-south-1
+  TF_VERSION: 1.6.6
+
+jobs:
+
+  validate:
+    name: Terraform Validate
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform/environments/dev
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Format Check
+        run: terraform fmt -check -recursive ../../..
+
+      - name: Init (No Backend)
+        run: terraform init -backend=false
+
+      - name: Validate
+        run: terraform validate
+
+      - name: Security Scan (tfsec)
+        uses: aquasecurity/tfsec-action@v1.0.3
+
+  plan:
+    name: Terraform Plan (Dev)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    needs: validate
+    defaults:
+      run:
+        working-directory: terraform/environments/dev
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init
+        run: terraform init -backend-config=backend-dev.hcl
+
+      - name: Terraform Plan
+        run: terraform plan -lock=false
+
+  apply-dev:
+    name: Apply Dev (Main Branch Only)
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    needs: validate
+    environment:
+      name: dev
+
+    defaults:
+      run:
+        working-directory: terraform/environments/dev
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init
+        run: terraform init -backend-config=backend-dev.hcl
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve
