@@ -133,3 +133,55 @@ resource "helm_release" "aws_load_balancer_controller" {
     value = module.alb_controller_irsa.irsa_role_arn
   }
 }
+
+module "observability" {
+  source = "../../modules/observability"
+
+  environment      = "prod"
+  rds_instance_id  = module.rds.db_instance_id
+  alb_name         = module.alb_controller_irsa.alb_name
+
+  slack_workspace_id = var.slack_workspace_id
+  slack_channel_id   = var.slack_channel_id
+}
+
+module "karpenter_irsa" {
+  source = "../../modules/iam-irsa"
+
+  role_name = "prod-karpenter-irsa"
+
+  oidc_provider_arn = module.eks.oidc_provider_arn
+  oidc_provider_url = replace(module.eks.oidc_provider_url, "https://", "")
+
+  namespace       = "karpenter"
+  service_account = "karpenter"
+
+  policy_json = data.aws_iam_policy_document.karpenter_controller_policy.json
+}
+
+resource "helm_release" "karpenter" {
+  name             = "karpenter"
+  namespace        = "karpenter"
+  create_namespace = true
+  repository       = "https://charts.karpenter.sh"
+  chart            = "karpenter"
+
+  set {
+    name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
+    value = module.karpenter_irsa.irsa_role_arn
+  }
+
+  set {
+    name  = "settings.clusterName"
+    value = module.eks.cluster_name
+  }
+
+  set {
+    name  = "settings.clusterEndpoint"
+    value = module.eks.cluster_endpoint
+  }
+
+  depends_on = [
+    module.karpenter_irsa
+  ]
+}
